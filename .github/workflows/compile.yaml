@@ -5,64 +5,118 @@ on:
       - created
   push: {}
   pull_request: {}
+
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         path: main
         submodules: true
       name: Checkout Repository
+
     - name: Extract Metadata
       id: metadata
       run: python3 main/_DO_NOT_INCLUDE/extract-metadata.py ${{ github.ref }}
+
     - name: Add Universe Repository
       run: sudo add-apt-repository universe
+
     - name: Update Packages
       run: sudo apt-get update
+
     - name: Install Dependencies
-      run: sudo apt-get install --assume-yes wine-stable wine64 python3-pip libfuse2
+      run: sudo apt-get install --assume-yes wine-stable wine64 python3-pip libfuse2 zip
+
+    - name: Set up Java JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
     - name: Install makelove
       run: pip3 install git+https://github.com/pfirsich/makelove/
-    - name: Build
+
+    # --- Desktop Builds ---
+    - name: Build Desktop Artifacts
       run: |
         cd main
         python3 -m makelove --version-name ${{ steps.metadata.outputs.version }}
         cd ..
-    - name: Rename AppImage # for consistency with every other built artifact
+
+    - name: Rename AppImage
       run: mv main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}.AppImage main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}-linux.AppImage
+
+    # --- Android Build ---
+    - name: Checkout love-android
+      uses: actions/checkout@v4
+      with:
+        repository: love2d/love-android
+        path: love-android
+        submodules: true
+
+    - name: Package .love file into Android project
+      run: |
+        mkdir -p love-android/app/src/main/assets
+        cp main/makelove-build/${{ steps.metadata.outputs.version }}/love/${{ steps.metadata.outputs.id }}.love love-android/app/src/main/assets/game.love
+
+    - name: Build Android APK
+      run: |
+        cd love-android
+        chmod +x gradlew
+        ./gradlew assembleEmbedNoRecordRelease
+
+    - name: Copy Android APK to Build Output
+      run: |
+        mkdir -p main/makelove-build/${{ steps.metadata.outputs.version }}/android
+        cp love-android/app/build/outputs/apk/embedNoRecord/release/*.apk main/makelove-build/${{ steps.metadata.outputs.version }}/android/${{ steps.metadata.outputs.id }}-android.apk
+
+    # --- CI Artifact Uploads ---
     - name: Artifact (LÖVE)
       if: github.event_name != 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.metadata.outputs.id }}-source
         path: main/makelove-build/${{ steps.metadata.outputs.version }}/love/${{ steps.metadata.outputs.id }}.love
+
     - name: Artifact (AppImage)
       if: github.event_name != 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.metadata.outputs.id }}-linux
         path: main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}-linux.AppImage
+
     - name: Artifact (Win64)
       if: github.event_name != 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.metadata.outputs.id }}-win64
         path: main/makelove-build/${{ steps.metadata.outputs.version }}/win64/${{ steps.metadata.outputs.id }}-win64.zip
+
     - name: Artifact (Win32)
       if: github.event_name != 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.metadata.outputs.id }}-win32
         path: main/makelove-build/${{ steps.metadata.outputs.version }}/win32/${{ steps.metadata.outputs.id }}-win32.zip
+
     - name: Artifact (MacOS)
       if: github.event_name != 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.metadata.outputs.id }}-macos
         path: main/makelove-build/${{ steps.metadata.outputs.version }}/macos/${{ steps.metadata.outputs.id }}-macos.zip
+
+    - name: Artifact (Android)
+      if: github.event_name != 'release'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.metadata.outputs.id }}-android
+        path: main/makelove-build/${{ steps.metadata.outputs.version }}/android/${{ steps.metadata.outputs.id }}-android.apk
+
+    # --- Release Asset Uploads ---
     - name: Upload Release Assets
       if: github.event_name == 'release'
       uses: svenstaro/upload-release-action@v2
