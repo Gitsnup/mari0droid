@@ -50,63 +50,46 @@ jobs:
       run: mv main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}.AppImage main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}-linux.AppImage
 
     # --- Android Build ---
-    # The game runs on LÖVE 11.4, so build against love-android 11.5 (same API
-    # line). The 12.x default branch removed the noRecord variants and changed
-    # the assets layout, which is what broke the previous workflow.
-    - name: Checkout love-android
-      uses: actions/checkout@v4
-      with:
-        repository: love2d/love-android
-        ref: 11.5
-        path: love-android
-        submodules: true
-
-    - name: Package .love file into Android project
-      run: |
-        mkdir -p love-android/app/src/embed/assets
-        cp main/makelove-build/${{ steps.metadata.outputs.version }}/love/${{ steps.metadata.outputs.id }}.love love-android/app/src/embed/assets/game.love
-
-    - name: Build Android APK
-      run: |
-        cd love-android
-        chmod +x gradlew
-        ./gradlew assembleEmbedNoRecordRelease
-
-    # love-android release builds are unsigned. Zipalign, then sign with the
-    # repo secrets if provided, or a throwaway keystore otherwise.
-    # NOTE: a new throwaway keystore per build means Android refuses to update
-    # an installed copy from an earlier build. For stable updates across
-    # releases, store these repo secrets:
+    # Same pipeline Mari0: AE uses: qixils/love-actions-android compiles the
+    # LÖVE 11.x runtime from source (matching the game's LÖVE 11.4 target),
+    # packs the .love, and outputs signed release + debug APKs.
+    # For stable updates across releases, store these repo secrets:
     #   ANDROID_KEYSTORE_B64       base64 of your keystore file
     #   ANDROID_KEYSTORE_PASSWORD  keystore password
     #   ANDROID_KEY_PASSWORD       key password
     #   ANDROID_KEY_ALIAS          key alias
-    - name: Sign Android APK
+    # Without them, the action still produces a debug APK (installable, but
+    # Android won't update an installed copy from an earlier signed build).
+    - name: Compute Android version code
+      id: android-version
+      run: |
+        V="${{ steps.metadata.outputs.version }}"
+        IFS='.' read -r MA MI PA <<< "$V"
+        echo "code=$(( ${MA:-0} * 10000 + ${MI:-0} * 100 + ${PA:-0} ))" >> "$GITHUB_OUTPUT"
+
+    - name: Build Android APK
+      id: build-android
+      uses: qixils/love-actions-android@v1
       env:
         ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'mari0droid' }}
-      run: |
-        OUTDIR="main/makelove-build/${{ steps.metadata.outputs.version }}/android"
-        mkdir -p "$OUTDIR"
-        UNSIGNED="$(ls love-android/app/build/outputs/apk/embedNoRecord/release/*.apk | head -n1)"
-        BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)"
-        KEYSTORE="$RUNNER_TEMP/mari0droid.keystore"
-        if [ -n "$ANDROID_KEYSTORE_B64" ]; then
-          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
-        else
-          keytool -genkeypair -keystore "$KEYSTORE" -storepass mari0droid \
-            -keypass mari0droid -alias mari0droid -keyalg RSA -keysize 2048 \
-            -validity 10000 -dname "CN=Mari0droid"
-        fi
-        ALIAS="$ANDROID_KEY_ALIAS"
-        "$BUILD_TOOLS/zipalign" -f 4 "$UNSIGNED" "$OUTDIR/${{ steps.metadata.outputs.id }}-android.apk"
-        "$BUILD_TOOLS/apksigner" sign \
-          --ks "$KEYSTORE" --ks-key-alias "$ALIAS" \
-          --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD:-mari0droid}" \
-          --key-pass "pass:${ANDROID_KEY_PASSWORD:-mari0droid}" \
-          "$OUTDIR/${{ steps.metadata.outputs.id }}-android.apk"
+      with:
+        app-name: ${{ steps.metadata.outputs.title }}
+        bundle-id: com.gitsnup.mari0droid
+        product-name: ${{ steps.metadata.outputs.id }}
+        resource-path: "main/.android-resources"
+        love-ref: "11.x"
+        love-package: "main/makelove-build/${{ steps.metadata.outputs.version }}/love/${{ steps.metadata.outputs.id }}.love"
+        remote-libs: "https://github.com/qixils/lua-https"
+        version-string: ${{ steps.metadata.outputs.version }}
+        version-code: ${{ steps.android-version.outputs.code }}
+        output-folder: "main/makelove-build/${{ steps.metadata.outputs.version }}/android"
+        keystore-alias: ${{ env.ANDROID_KEY_ALIAS }}
+        keystore-base64: ${{ env.ANDROID_KEYSTORE_B64 }}
+        keystore-key-password: ${{ env.ANDROID_KEY_PASSWORD || env.ANDROID_KEYSTORE_PASSWORD }}
+        keystore-store-password: ${{ env.ANDROID_KEYSTORE_PASSWORD }}
 
     # --- CI Artifact Uploads ---
     - name: Artifact (LÖVE)
@@ -149,7 +132,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.metadata.outputs.id }}-android
-        path: main/makelove-build/${{ steps.metadata.outputs.version }}/android/${{ steps.metadata.outputs.id }}-android.apk
+        path: main/makelove-build/${{ steps.metadata.outputs.version }}/android/*.apk
 
     # --- Release Asset Uploads ---
     - name: Upload Release Assets

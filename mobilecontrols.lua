@@ -335,6 +335,55 @@ local function postwrap()
 	applytouchbindings()
 end
 
+-- Android ignores love.window.setMode's 800x448, so the game would render
+-- at the raw device resolution with scale still at its desktop value. Adapt
+-- the scale so the 224-unit playfield fills the screen's height (capped so
+-- ultra-wide screens don't stretch the level), and keep GUI metrics in sync.
+local function wrapchangescale()
+	if S.cswrapped then return end
+	local oldchangescale = changescale
+	if not oldchangescale then return end
+	changescale = function(s, fullscreen, ...)
+		if S.ismobile and love.graphics then
+			local w, h = love.graphics.getWidth(), love.graphics.getHeight()
+			if w > 0 and h > 0 then
+				local newscale = math.max(1, math.floor(h / 224 + 0.5))
+				if w / (16 * newscale) < 26 then
+					newscale = math.max(1, math.floor(w / (16 * 26) + 0.5))
+				end
+				if newscale ~= scale or fullscreen ~= fullscreenmode then
+					fullscreenmode = fullscreen
+					oldchangescale(newscale, fullscreen, ...)
+					if shaders and shaders.refresh then pcall(function() shaders:refresh() end) end
+					gamewidth, gameheight = w, h
+					uispace = math.floor(width * 16 * scale / 4)
+				end
+				return
+			end
+		end
+		return oldchangescale(s, fullscreen, ...)
+	end
+	S.cswrapped = true
+end
+
+-- On Android a Lua error shows a black screen with no console. Log it to
+-- <save dir>/mari0droid-error.txt so failures are diagnosable.
+local function wraperrorhandler()
+	if S.errwrapped or not love.errorhandler then return end
+	local olderrorhandler = love.errorhandler
+	love.errorhandler = function(...)
+		local msg = tostring((...))
+		pcall(function()
+			local log = {os.date("%Y-%m-%d %H:%M:%S"), msg}
+			local trace = debug and debug.traceback and debug.traceback("", 2) or ""
+			if trace and trace ~= "" then log[#log+1] = trace end
+			love.filesystem.append("mari0droid-error.txt", table.concat(log, "\n") .. "\n\n")
+		end)
+		return olderrorhandler(msg)
+	end
+	S.errwrapped = true
+end
+
 local function prewrap()
 	if defaultconfig and not S.cfgwrapped then
 		local olddefaultconfig = defaultconfig
@@ -355,7 +404,9 @@ local function install()
 				local old = v
 				v = function(...)
 					S.ismobile = ismobileos()
+					if S.ismobile then wraperrorhandler() end
 					if S.ismobile and defaultconfig then prewrap() end
+					if S.ismobile then wrapchangescale() end
 					local r = old(...)
 					if S.ismobile and checkkey and mario then postwrap() end
 					return r

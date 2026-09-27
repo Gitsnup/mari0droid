@@ -67,6 +67,13 @@ setmetatable(p, { __index = mario })
 
 -- The real main.lua requires mobilecontrols BEFORE defining love.load, so the
 -- assignment hook catches it. Mirror that ordering here.
+rawchangescale = function(s, fullscreen)
+	scale = s
+	uispace = math.floor(width*16*scale/4)
+	gamewidth, gameheight = love.graphics.getWidth(), love.graphics.getHeight()
+end
+changescale = rawchangescale
+
 dofile("mobilecontrols.lua")
 
 local load_ran = false
@@ -168,7 +175,8 @@ expect("editing-stopped", savedata ~= nil and savedata:match("left=0%.25,0%.8333
 
 -- 10. fresh module boot loads the saved layout
 dofile("mobilecontrols.lua")
-love.load = function() end  -- re-triggers the new module's load wrapper
+love.load = nil  -- __newindex only fires for NEW keys: clear first
+love.load = function() end  -- re-triggers the load wrapper
 love.load()
 gamestate = "game"; optionstab = 1
 love.touchpressed(15, 80, 393)  -- old position: nothing there anymore
@@ -184,6 +192,31 @@ gamestate = "menu"
 love.draw = function() end
 love.draw()  -- the draw wrapper runs draw_controls internally
 expect("held-cleared-on-state-change", checkkey({"touch", "left"}) == false)
+
+-- 12b. mobile scale: fills the screen height, caps ultra-wide, updates metrics
+-- (harness boots as Android, so the module is already in mobile mode)
+scale = 2; uispace = 100; gamewidth, gameheight = 800, 448
+love.graphics.getWidth = function() return 2400 end
+love.graphics.getHeight = function() return 1080 end
+changescale(2)
+expect("mobile-scale-fills-height", scale == math.floor(1080/224 + 0.5) and gameheight == 1080 and scale*224 >= 1080)
+expect("mobile-uispace", uispace == math.floor(width*16*scale/4))
+-- narrow screen: scale capped so 26 tiles fit
+love.graphics.getWidth = function() return 1000 end
+love.graphics.getHeight = function() return 1600 end
+changescale(2)
+expect("mobile-scale-narrow-caps", scale == math.floor(1000/(16*26) + 0.5))
+love.graphics.getWidth = function() return 800 end
+love.graphics.getHeight = function() return 480 end
+-- desktop: fresh boot with a desktop OS; changescale passes through untouched
+love.system.getOS = function() return "Linux" end
+dofile("mobilecontrols.lua")
+love.load = function() end
+love.load()
+love.graphics.getWidth = function() return 800 end
+love.graphics.getHeight = function() return 448 end
+changescale(2)
+expect("desktop-scale-passthrough", scale == 2 and gameheight == 448)
 
 print(table.concat(out, "\n"))
 print("---")
