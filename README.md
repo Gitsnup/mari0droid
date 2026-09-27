@@ -40,3 +40,17 @@ Uses [makelove](https://github.com/rameshvarun/makelove) (see `makelove.toml`)
 for desktop targets; Android builds via the LÖVE 11.4 APK wrapper.
 
 MIT License
+
+## Mobile controls
+On Android/iOS, on-screen touch controls are enabled automatically: a d-pad (left/right/down/up), jump (A), run/fire (B), portal gun buttons (blue/orange circles), portal reset (R), interact (E) and pause (||). The empty right side of the screen is an aim surface — drag to aim the portal gun, tap to shoot portal 1.
+
+The layout can be customized: in **Options → Controls**, drag the buttons to move them, then release to save (stored in `mobilecontrols.txt` in the save directory).
+
+Desktop (keyboard/mouse) behavior is unchanged; the touch layer only activates on Android/iOS.
+
+## Development
+`_DO_NOT_INCLUDE/test_mobilecontrols.lua` is a standalone harness that simulates an Android LÖVE environment and exercises the touch control module without a device:
+
+```
+lua5.1 _DO_NOT_INCLUDE/test_mobilecontrols.lua
+```
