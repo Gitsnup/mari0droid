@@ -4,6 +4,8 @@
 	Licensed under MIT. You should not have received a copy of the MIT license with this program because just google for it, cmon.
 ]]
 
+require "mobilecontrols"
+
 function love.load()
 	love.filesystem.setIdentity("mari0")
 	if not love.filesystem.getSaveDirectory():match("LOVE") then
