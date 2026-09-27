@@ -1,44 +1,42 @@
-# mari0
-Runs on LÖVE 11.4
+# mari0 (droid)
+Mario + Portal platformer for Android. Runs on LÖVE 11.4.
 
-MIT License
+Based on Maurice Guégan's Mari0, with touch controls for phones/tablets.
 
-## Mobile controls (Android/iOS)
+## Mobile controls
 
-On touch devices, player 1 is controlled with on-screen buttons (`mobilecontrols.lua`,
-required from `main.lua` before `love.load`):
+On Android/iOS the game shows an on-screen control layer:
 
-- `<` `>` `v` `^` — move (held = continuous movement)
-- `A` — jump (release early for a short hop)
-- `B` — run / fire
-- `O` (blue, orange) — shoot portal 1 / portal 2
-- `R` — remove portals, `E` — use, `||` — pause
+- **D-pad** (left side) — move; hold **down** for pipes.
+- **A** (right) — jump (release early for a shorter jump).
+- **B** — run / shoot fireballs.
+- **O** (blue) / **O** (orange) — shoot portal 1 / portal 2.
+- **R** — remove portals. **E** — use (levers, doors...).
+- **| |** (top right) — pause menu. The pause menu rows are tappable.
 - The unoccupied right side of the screen is an aim surface: drag to aim the
-  portal gun, tap to shoot portal 1 in that direction.
+  portal gun, quick tap to fire portal 1 at the tapped direction.
+- The bottom half of the map screen is a virtual mouse for the level editor.
 
-In **Options → Controls**, the buttons can be dragged to any position; releasing
-saves the layout to `mobilecontrols.txt` in the save directory. Overlapping
-buttons still work: a touch activates the nearest one.
+Touching a button never leaks a mouse click, so buttons don't fire portals or
+click hidden menu items. Desktop builds are unaffected (keyboard/mouse only).
 
-Desktop is unaffected: keyboard/mouse controls and the stock menu behavior are
-only wrapped on Android/iOS (`love.system.getOS()`).
+### Layout editing
 
-### Touch quirks handled
+Open **Options → Controls** and drag the buttons to rearrange them; release to
+save. The layout persists in `mobilecontrols.txt` in the save directory.
 
-- Android synthesizes mouse events from touches; events that land on a control
-  button (or the left zone) are swallowed so buttons don't fire portals or
-  click hidden GUI. Taps in the aim area pass through on purpose.
-- The keyboard-only pause menu is tappable: tap a row to select it, tap again
-  to activate (prompts: tap left/right for yes/no).
-- Gameplay globals (`checkkey`, `defaultconfig`, `mario.updateangle`) are
-  wrapped inside the `love.load` hook, after `main.lua` requires its files.
+### Testing
 
-### Dev test harness
+`_DO_NOT_INCLUDE/test_mobilecontrols.lua` is a dev-only stub harness that
+exercises the control layer end-to-end without a device:
 
-`_DO_NOT_INCLUDE/test_mobilecontrols.lua` stubs the LÖVE API and runs ~28
-checks (bindings, held keys, pause handling, mouse-swallow rules, layout
-save/reload) without a device:
-
-```sh
+```
 lua5.1 _DO_NOT_INCLUDE/test_mobilecontrols.lua
 ```
+
+## Building
+
+Uses [makelove](https://github.com/rameshvarun/makelove) (see `makelove.toml`)
+for desktop targets; Android builds via the LÖVE 11.4 APK wrapper.
+
+MIT License
