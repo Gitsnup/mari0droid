@@ -50,17 +50,21 @@ jobs:
       run: mv main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}.AppImage main/makelove-build/${{ steps.metadata.outputs.version }}/appimage/${{ steps.metadata.outputs.id }}-linux.AppImage
 
     # --- Android Build ---
+    # The game runs on LÖVE 11.4, so build against love-android 11.5 (same API
+    # line). The 12.x default branch removed the noRecord variants and changed
+    # the assets layout, which is what broke the previous workflow.
     - name: Checkout love-android
       uses: actions/checkout@v4
       with:
         repository: love2d/love-android
+        ref: 11.5
         path: love-android
         submodules: true
 
     - name: Package .love file into Android project
       run: |
-        mkdir -p love-android/app/src/main/assets
-        cp main/makelove-build/${{ steps.metadata.outputs.version }}/love/${{ steps.metadata.outputs.id }}.love love-android/app/src/main/assets/game.love
+        mkdir -p love-android/app/src/embed/assets
+        cp main/makelove-build/${{ steps.metadata.outputs.version }}/love/${{ steps.metadata.outputs.id }}.love love-android/app/src/embed/assets/game.love
 
     - name: Build Android APK
       run: |
@@ -68,10 +72,41 @@ jobs:
         chmod +x gradlew
         ./gradlew assembleEmbedNoRecordRelease
 
-    - name: Copy Android APK to Build Output
+    # love-android release builds are unsigned. Zipalign, then sign with the
+    # repo secrets if provided, or a throwaway keystore otherwise.
+    # NOTE: a new throwaway keystore per build means Android refuses to update
+    # an installed copy from an earlier build. For stable updates across
+    # releases, store these repo secrets:
+    #   ANDROID_KEYSTORE_B64       base64 of your keystore file
+    #   ANDROID_KEYSTORE_PASSWORD  keystore password
+    #   ANDROID_KEY_PASSWORD       key password
+    #   ANDROID_KEY_ALIAS          key alias
+    - name: Sign Android APK
+      env:
+        ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'mari0droid' }}
       run: |
-        mkdir -p main/makelove-build/${{ steps.metadata.outputs.version }}/android
-        cp love-android/app/build/outputs/apk/embedNoRecord/release/*.apk main/makelove-build/${{ steps.metadata.outputs.version }}/android/${{ steps.metadata.outputs.id }}-android.apk
+        OUTDIR="main/makelove-build/${{ steps.metadata.outputs.version }}/android"
+        mkdir -p "$OUTDIR"
+        UNSIGNED="$(ls love-android/app/build/outputs/apk/embedNoRecord/release/*.apk | head -n1)"
+        BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)"
+        KEYSTORE="$RUNNER_TEMP/mari0droid.keystore"
+        if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+        else
+          keytool -genkeypair -keystore "$KEYSTORE" -storepass mari0droid \
+            -keypass mari0droid -alias mari0droid -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=Mari0droid"
+        fi
+        ALIAS="$ANDROID_KEY_ALIAS"
+        "$BUILD_TOOLS/zipalign" -f 4 "$UNSIGNED" "$OUTDIR/${{ steps.metadata.outputs.id }}-android.apk"
+        "$BUILD_TOOLS/apksigner" sign \
+          --ks "$KEYSTORE" --ks-key-alias "$ALIAS" \
+          --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD:-mari0droid}" \
+          --key-pass "pass:${ANDROID_KEY_PASSWORD:-mari0droid}" \
+          "$OUTDIR/${{ steps.metadata.outputs.id }}-android.apk"
 
     # --- CI Artifact Uploads ---
     - name: Artifact (LÖVE)
