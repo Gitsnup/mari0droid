@@ -65,6 +65,15 @@ end
 mario = { updateangle = function(self) self.pointingangle = 0.01 end }
 setmetatable(p, { __index = mario })
 
+-- Menu state the tap translation talks to. menu_keypressed is the game's own
+-- keyboard handler, so the harness records what a tap translated into.
+menu_log = {}
+selection = 1
+continueavailable = false
+function menu_keypressed(key)
+	menu_log[#menu_log+1] = key
+end
+
 -- The real main.lua requires mobilecontrols BEFORE defining love.load, so the
 -- assignment hook catches it. Mirror that ordering here.
 rawchangescale = function(s, fullscreen)
@@ -193,19 +202,81 @@ love.draw = function() end
 love.draw()  -- the draw wrapper runs draw_controls internally
 expect("held-cleared-on-state-change", checkkey({"touch", "left"}) == false)
 
--- 12b. mobile scale: fills the screen height, caps ultra-wide, updates metrics
--- (harness boots as Android, so the module is already in mobile mode)
+-- 13. menu taps: a tap selects the row under the finger and confirms it
+gamestate = "menu"
+scale, width = 2, 25
+continueavailable = false
+menu_log = {}
+-- row 2 ("level editor") spans gui y 149..175, so 160*scale is inside it
+love.mousepressed(160, 160*scale, 1, true)
+expect("menutap-selects-row", selection == 2)
+expect("menutap-confirms", menu_log[1] == "return" and #menu_log == 1)
+
+-- a tap in the gap between the title and the rows does nothing
+menu_log = {}
+love.mousepressed(160, 110*scale, 1, true)
+expect("menutap-ignores-gap", #menu_log == 0)
+
+-- with a suspend file present every row shifts down by one
+continueavailable = true
+selection = 1
+menu_log = {}
+love.mousepressed(160, 160*scale, 1, true)
+expect("menutap-continue-shift", selection == 1 and menu_log[1] == "return")
+
+-- a desktop mouse click must not be translated into key presses
+love.system.getOS = function() return "Linux" end
+playertype, mario = playertype, mario
+dofile("mobilecontrols.lua")
+love.load = nil
+love.load = function() end
+love.load()
+gamestate = "menu"
+selection = 3
+menu_log = {}
+love.mousepressed(160, 160*scale, 1, false)
+expect("menutap-desktop-passthrough", #menu_log == 0)
+love.system.getOS = function() return "Android" end
+dofile("mobilecontrols.lua")
+love.load = nil
+love.load = function() end
+love.load()
+gamestate = "game"
+
+--- 12b. mobile scale: fits BOTH the height and the width of the screen
+--- (harness boots as Android, so the module is already in mobile mode)
 scale = 2; uispace = 100; gamewidth, gameheight = 800, 448
 love.graphics.getWidth = function() return 2400 end
 love.graphics.getHeight = function() return 1080 end
 changescale(2)
-expect("mobile-scale-fills-height", scale == math.floor(1080/224 + 0.5) and gameheight == 1080 and scale*224 >= 1080)
+-- 2400x1080 would let 4x fill the height, but 4*400 = 1600 <= 2400 so width
+-- also allows it; the full 224-unit playfield has to fit vertically.
+expect("mobile-scale-fits-height", scale*224 <= 1080 and (scale+1)*224 > 1080)
+expect("mobile-scale-fits-width", scale*16*25 <= 2400)
 expect("mobile-uispace", uispace == math.floor(width*16*scale/4))
--- narrow screen: scale capped so 26 tiles fit
+
+-- A 16:9 phone: the height allows more scale than the width does. This is the
+-- case that used to overshoot and push the view off the bottom of the screen.
+love.graphics.getWidth = function() return 720 end
+love.graphics.getHeight = function() return 1280 end
+changescale(2)
+expect("mobile-phone-fits-width", scale*16*25 <= 720)
+expect("mobile-phone-fits-height", scale*224 <= 1280)
+expect("mobile-phone-picks-width-limit", scale == 1)
+
+-- Narrow portrait: width is the binding constraint.
 love.graphics.getWidth = function() return 1000 end
 love.graphics.getHeight = function() return 1600 end
 changescale(2)
-expect("mobile-scale-narrow-caps", scale == math.floor(1000/(16*26) + 0.5))
+expect("mobile-scale-narrow-caps", scale == math.floor(1000/(16*25)))
+
+-- Landscape tablet: height is the binding constraint.
+love.graphics.getWidth = function() return 1600 end
+love.graphics.getHeight = function() return 900 end
+changescale(2)
+expect("mobile-tablet-fits-height", scale == math.floor(900/224))
+expect("mobile-tablet-fits-width", scale*16*25 <= 1600)
+
 love.graphics.getWidth = function() return 800 end
 love.graphics.getHeight = function() return 480 end
 -- desktop: fresh boot with a desktop OS; changescale passes through untouched
