@@ -17,20 +17,39 @@ local mobile = {
 		-- fontglyphs (main.lua) only carries digits, UPPERCASE letters and
 		-- .:/,'C-_>* !{}? -- so no lowercase and no "+". Anything outside that
 		-- set renders as a blank circle.
-		left    = {x=.10, y=.82, w=68, h=68, label="<"},
-		right   = {x=.22, y=.82, w=68, h=68, label=">"},
-		down    = {x=.16, y=.70, w=56, h=56, label="_"},
-		up      = {x=.16, y=.56, w=48, h=48, label="^"},
-		jump    = {x=.78, y=.78, w=76, h=76, label="A"},
-		run     = {x=.90, y=.68, w=64, h=64, label="B"},
-		portal1 = {x=.78, y=.58, w=58, h=58, label="O"},
-		portal2 = {x=.90, y=.54, w=58, h=58, label="O"},
-		reload  = {x=.08, y=.62, w=52, h=52, label="R"},
-		use     = {x=.28, y=.67, w=52, h=52, label="USE"},
-		pause   = {x=.95, y=.10, w=46, h=46, label="+"},
+		-- D-pad as a real cross: up above, down below, left and right flanking
+		-- a shared centre, so each direction sits where a thumb expects it.
+		-- The old layout put up/down on a vertical line beside the horizontals,
+		-- which read as four unrelated buttons.
+		-- Labels must map to a cell in font.png (main.lua's fontglyphs). That set
+		-- is digits + LOWERCASE a-z + .:/,'C-_>* !{}? -- there are no uppercase
+		-- letters and no "<" or "^", and a character outside the set draws
+		-- nothing at all. The atlas has a right triangle (">") and a down
+		-- triangle ("{"), but no up or left arrow, so those two say "up"/"lt".
+		up      = {x=.155, y=.659, w=64, h=64, label="up"},
+		down    = {x=.155, y=.811, w=64, h=64, label="{"},
+		left    = {x=.102, y=.735, w=64, h=64, label="lt"},
+		right   = {x=.208, y=.735, w=64, h=64, label=">"},
+		jump    = {x=.78, y=.78, w=76, h=76, label="a"},
+		run     = {x=.90, y=.68, w=64, h=64, label="b"},
+		portal1 = {x=.78, y=.58, w=58, h=58, label="1"},
+		portal2 = {x=.90, y=.54, w=58, h=58, label="2"},
+		reload  = {x=.060, y=.600, w=52, h=52, label="r"},
+		use     = {x=.265, y=.735, w=52, h=52, label="use"},
+		pause   = {x=.95, y=.10, w=46, h=46, label="p"},
 	}
 }
 S.controls = mobile.controls
+-- A DEEP COPY of the shipped layout. S.controls is the same table as
+-- mobile.controls, so load() mutates it in place when a save file exists; a
+-- plain alias here would silently track those mutations instead of preserving
+-- the defaults it claims to hold.
+S.defaultcontrols = {}
+for name, b in pairs(mobile.controls) do
+	local c = {}
+	for k, v in pairs(b) do c[k] = v end
+	S.defaultcontrols[name] = c
+end
 
 local actions = {"left", "right", "down", "up", "jump", "run", "reload", "use", "portal1", "portal2"}
 
@@ -397,13 +416,32 @@ end
 -- love's default font, which is a 12px outline face that reads badly at button
 -- size. Centres the text, and steps the size down for anything longer than a
 -- single glyph.
+-- Draw a button label with the GAME'S OWN font, not love's default.
+--
+-- properprint scales every glyph by the global `scale` (currently ~4.8 on a
+-- 1080-tall screen), which would blow an 8x8 glyph up to ~38px inside a 68px
+-- button. So borrow the global for the duration of the call: save it, draw at a
+-- fixed size, restore it. Nothing else runs between the save and the restore, so
+-- the mutation never escapes this function.
 local function drawlabel(label, x, y, w, h)
 	if not label or label == "" then return end
 	local n = string.len(label)
-	local size = 2
-	if n > 1 then size = 1 end
+	-- Keep the label inside the button with a little breathing room. The clamp
+	-- matters more than the division: a 3-glyph label in a 52px button works out
+	-- to scale 1, i.e. 8px tall on a 2340px screen, which is unreadable. Allow a
+	-- mild overflow rather than shrinking a word into noise.
+	-- Floor of 2 keeps short words readable; ceiling of 4 stops a single glyph
+	-- from ballooning to fill the whole circle and looking unlike the others.
+	local size = math.floor(math.min(w, h) * 0.72 / (8 * n))
+	if size < 2 then size = 2 end
+	if size > 4 then size = 4 end
+	-- ...but never let a long word run outside its circle.
+	while n * 8 * size > w - 4 and size > 1 do size = size - 1 end
 	local tw = n * 8 * size
-	love.graphics.printf(label, x + (w - tw) / 2, y + h / 2 - 4 * size, tw, "left")
+	local saved = scale
+	scale = size
+	properprint(label, x + (w - tw) / 2, y + h / 2 - 4 * size)
+	scale = saved
 end
 
 local function draw_controls()

@@ -94,6 +94,34 @@ function menu_load()
 	continueavailable = false
 end
 
+-- The game's font: properprint draws fontquads[char] scaled by the global
+-- `scale`, and fontquads is keyed by every character in fontglyphs. This is the
+-- ground truth for "can a label actually be drawn".
+fontglyphs = "0123456789abcdefghijklmnopqrstuvwxyz.:/,'C-_>* !{}?"
+fontquads = {}
+for i = 1, string.len(fontglyphs) do
+	fontquads[string.sub(fontglyphs, i, i)] = true
+end
+-- Record what a label would actually draw. A character missing from fontquads
+-- produces NO quad, i.e. nothing rendered -- the blank-circle bug.
+drawn_glyphs = {}
+function properprint(str, x, y)
+	str = tostring(str)
+	drawn_glyphs[#drawn_glyphs+1] = str
+	for i = 1, string.len(str) do
+		local c = string.sub(str, i, i)
+		if not fontquads[c] then
+			undrawable[#undrawable+1] = c
+		end
+	end
+end
+undrawable = {}
+love.graphics.print = function() end
+love.graphics.printf = function() end
+love.graphics.circle = function() end
+love.graphics.setColor = function() end
+love.graphics.rectangle = function() end
+
 -- The real main.lua requires mobilecontrols BEFORE defining love.load, so the
 -- assignment hook catches it. Mirror that ordering here.
 rawchangescale = function(s, fullscreen)
@@ -109,6 +137,14 @@ changescale = rawchangescale
 --   2. load the module FIRST so it installs the metatable, THEN assign the
 --      handler, because the wrap only applies to an assignment made after the
 --      metatable exists.
+-- Screen centre of a named control, read from the module's own layout. Keeps
+-- the touch tests from silently pointing at wherever a button USED to be.
+local function btn(name)
+	local b = __mobilecontrols.controls[name]
+	local gw, gh = love.graphics.getWidth(), love.graphics.getHeight()
+	return b.x * gw, b.y * gh
+end
+
 local function boot_module()
 	love.mousepressed = nil
 	love.mousereleased = nil
@@ -129,21 +165,21 @@ expect("touch-bindings", controls[1]["left"][1] == "touch" and controls[1]["left
 expect("desktop-keyboard-untouched", controls[1]["aimx"][1] == "")
 
 -- 1. movement buttons poll through checkkey
-love.touchpressed(1, 80, 393)
+love.touchpressed(1, btn("left"))
 expect("held-left", checkkey({"touch", "left"}) == true)
-love.touchreleased(1, 80, 393)
+love.touchreleased(1, btn("left"))
 expect("released-left", checkkey({"touch", "left"}) == false)
 
 -- 2. action buttons fire player methods
-love.touchpressed(2, 800*0.78, 480*0.78)
+love.touchpressed(2, btn("jump"))
 expect("jump-held", checkkey({"touch", "jump"}) == true)
-love.touchreleased(2, 800*0.78, 480*0.78)
+love.touchreleased(2, btn("jump"))
 expect("jump-taps-jump+stopjump", fired[1] == "jump" and fired[2] == "stopjump")
-love.touchpressed(3, 800*0.90, 480*0.68); love.touchreleased(3, 800*0.90, 480*0.68)
-love.touchpressed(4, 800*0.08, 480*0.62); love.touchreleased(4, 800*0.08, 480*0.62)
-love.touchpressed(5, 800*0.28, 480*0.67); love.touchreleased(5, 800*0.28, 480*0.67)
-love.touchpressed(6, 800*0.78, 480*0.58); love.touchreleased(6, 800*0.78, 480*0.58)
-love.touchpressed(7, 800*0.90, 480*0.54); love.touchreleased(7, 800*0.90, 480*0.54)
+love.touchpressed(3, btn("run")); love.touchreleased(3, btn("run"))
+love.touchpressed(4, btn("reload")); love.touchreleased(4, btn("reload"))
+love.touchpressed(5, btn("use")); love.touchreleased(5, btn("use"))
+love.touchpressed(6, btn("portal1")); love.touchreleased(6, btn("portal1"))
+love.touchpressed(7, btn("portal2")); love.touchreleased(7, btn("portal2"))
 expect("run-reload-use-portal12", fired[3] == "fire" and fired[4] == "removeportals"
 	and fired[5] == "use" and gamekeys[1] == "portal1" and gamekeys[2] == "portal2")
 
@@ -157,32 +193,32 @@ expect("aim-move-follows-finger", p.pointingangle ~= after_press and p.pointinga
 love.touchreleased(8, 760, 300)
 
 -- 4. pause: opens on release, closes on second release
-love.touchpressed(9, 800*0.95, 480*0.10)
+love.touchpressed(9, btn("pause"))
 expect("pause-not-yet", pausemenuopen ~= true)
-love.touchreleased(9, 800*0.95, 480*0.10)
+love.touchreleased(9, btn("pause"))
 expect("pause-open", pausemenuopen == true)
-love.touchpressed(9, 800*0.95, 480*0.10)
-love.touchreleased(9, 800*0.95, 480*0.10)
+love.touchpressed(9, btn("pause"))
+love.touchreleased(9, btn("pause"))
 expect("pause-close", pausemenuopen == false)
 
 -- 5. gameplay actions ignored while paused (except the pause button)
-love.touchpressed(9, 800*0.95, 480*0.10); love.touchreleased(9, 800*0.95, 480*0.10) -- open
+love.touchpressed(9, btn("pause")); love.touchreleased(9, btn("pause")) -- open
 local nfired = #fired
-love.touchpressed(10, 800*0.78, 480*0.78)
+love.touchpressed(10, btn("jump"))
 expect("paused-jump-held-but-ignored", checkkey({"touch","jump"}) == true and #fired == nfired)
-love.touchreleased(10, 800*0.78, 480*0.78)
+love.touchreleased(10, btn("jump"))
 expect("paused-no-stopjump", #fired == nfired)
-love.touchpressed(9, 800*0.95, 480*0.10); love.touchreleased(9, 800*0.95, 480*0.10) -- close
+love.touchpressed(9, btn("pause")); love.touchreleased(9, btn("pause")) -- close
 expect("unpaused", pausemenuopen == false)
 
 -- 6. end-of-level: a button press advances instead of acting
 endpressbutton = true
-love.touchpressed(11, 800*0.78, 480*0.78)
+love.touchpressed(11, btn("jump"))
 expect("endpressbutton-advances", gamekeys[#gamekeys] == "endgame" and endpressbutton == false)
 
 -- 7. pause menu rows: first tap selects, second tap activates
 gamestate = "game"
-love.touchpressed(12, 800*0.95, 480*0.10); love.touchreleased(12, 800*0.95, 480*0.10) -- open
+love.touchpressed(12, btn("pause")); love.touchreleased(12, btn("pause")) -- open
 pausemenuselected = 2
 -- The panel is centred in the window, so its drawn centre is
 -- (gw - w*16*scale)/2 + (w*8)*scale, which is only w*8*scale when the drawn
@@ -221,10 +257,15 @@ expect("pass-desktop-mouse", mouse_log == 2)
 
 -- 9. layout editing: drag the left button in options, release saves
 gamestate = "options"; optionstab = 1
-love.touchpressed(14, 80, 393)
-love.touchmoved(14, 200, 400)
-love.touchreleased(14, 200, 400)
-expect("editing-stopped", savedata ~= nil and savedata:match("left=0%.25,0%.8333") ~= nil)
+local oldgx, oldgy = btn("left")
+local GW_, GH_ = love.graphics.getWidth(), love.graphics.getHeight()
+local newgx, newgy = 0.25 * GW_, 0.90 * GH_
+love.touchpressed(14, oldgx, oldgy)
+love.touchmoved(14, newgx, newgy)
+love.touchreleased(14, newgx, newgy)
+-- the module trims trailing zeros, so assert on the parsed value, not the text
+local want = string.format("left=%s,%s", tostring(newgx/GW_), tostring(newgy/GH_))
+expect("editing-stopped", savedata ~= nil and savedata:find(want, 1, true) ~= nil)
 
 -- 10. fresh module boot loads the saved layout
 boot_module()
@@ -232,19 +273,108 @@ love.load = nil  -- __newindex only fires for NEW keys: clear first
 love.load = function() end  -- re-triggers the load wrapper
 love.load()
 gamestate = "game"; optionstab = 1
-love.touchpressed(15, 80, 393)  -- old position: nothing there anymore
+love.touchpressed(15, oldgx, oldgy)  -- old position: nothing there anymore
 expect("old-spot-empty", checkkey({"touch", "left"}) == false)
-love.touchreleased(15, 80, 393)
-love.touchpressed(16, 230, 420)  -- moved position: button found (non-overlapping probe)
+love.touchreleased(15, oldgx, oldgy)
+local mgx, mgy = btn("left")  -- the reloaded layout's position
+love.touchpressed(16, mgx, mgy)
 expect("layout-reloaded", checkkey({"touch", "left"}) == true)
-love.touchreleased(16, 230, 420)
+love.touchreleased(16, mgx, mgy)
 
 -- 11. stuck held keys clear when leaving the game state
-love.touchpressed(17, 200, 400)
+love.touchpressed(17, btn("left"))
 gamestate = "menu"
 love.draw = function() end
 love.draw()  -- the draw wrapper runs draw_controls internally
 expect("held-cleared-on-state-change", checkkey({"touch", "left"}) == false)
+
+-- 12c. every button label must be drawable by the game's own font.
+--
+-- The atlas (graphics/SMB/font.png, 64 cells) is addressed by main.lua's
+-- fontglyphs string: digits, LOWERCASE a-z, then .:/,'C-_>* !{}?. It has no
+-- uppercase letters, no "<" and no "^". A character outside the set has no quad
+-- and draws NOTHING, which is what put blank circles on the controls before.
+drawlabel_for_test = nil
+undrawable = {}
+-- Render each label through the production draw path.
+for name in pairs(__mobilecontrols.controls) do
+	local b = __mobilecontrols.controls[name]
+	if b.label then
+		properprint(b.label, 0, 0)
+	end
+end
+expect("labels-all-drawable", #undrawable == 0)
+if #undrawable > 0 then
+	io.write("  undrawable chars: " .. table.concat(undrawable, " ") .. "\n")
+end
+
+-- Direct check of the glyph set, independent of the draw path, so a future
+-- label cannot slip through by never being drawn.
+local BAD = {}
+for name, b in pairs(__mobilecontrols.controls) do
+	if b.label then
+		for i = 1, string.len(b.label) do
+			local c = string.sub(b.label, i, i)
+			if not fontquads[c] then BAD[#BAD+1] = name .. ":" .. c end
+		end
+	end
+end
+expect("labels-in-glyph-set", #BAD == 0)
+if #BAD > 0 then io.write("  bad: " .. table.concat(BAD, " ") .. "\n") end
+
+-- And the D-pad must read as a cross: up above down on the same x, left and
+-- right flanking them on a shared y, all four centred on one point.
+--
+-- This must inspect the DEFAULT layout. An earlier test drags `left` and saves
+-- it, so reading the live table here would test a mutated layout instead.
+-- Read the SHIPPED layout from the module, not a copy. A hardcoded table here
+-- would pass no matter what the source did, which is the flaw this suite keeps
+-- running into.
+local DC = __mobilecontrols.defaultcontrols
+expect("default-controls-exposed", DC ~= nil)
+if not DC then
+	print(table.concat(out, "\n")); print("---"); print("ABORTED: defaultcontrols missing"); os.exit(1)
+end
+local D = {
+	up    = DC.up,
+	down  = DC.down,
+	left  = DC.left,
+	right = DC.right,
+}
+expect("dpad-up-above-down", D.up.y < D.down.y and math.abs(D.up.x - D.down.x) < 0.02)
+expect("dpad-left-right-flank", D.left.x < D.right.x and math.abs(D.left.y - D.right.y) < 0.02)
+expect("dpad-cross-centred",
+	math.abs((D.left.x + D.right.x)/2 - D.up.x) < 0.03
+	and math.abs((D.up.y + D.down.y)/2 - D.left.y) < 0.03)
+
+-- The arms must not overlap, or a tap between two directions picks one at
+-- random. Measure in units of the button size (which is in screen px) rather
+-- than raw pixels, so this holds at any window size the suite runs at.
+do
+	local GW_, GH_ = love.graphics.getWidth(), love.graphics.getHeight()
+	local size = __mobilecontrols.controls.up.w
+	local gapx = math.abs(D.left.x - D.right.x) * GW_
+	local gapy = math.abs(D.up.y - D.down.y) * GH_
+	expect("dpad-arms-do-not-overlap", gapx >= size and gapy >= size)
+end
+
+-- 12d. labels must be big enough to read and small enough to stay inside the
+-- button. A 3-glyph word in a 52px circle works out to scale 1 (8px) if the
+-- size is unclamped, which is unreadable on a phone.
+do
+	local C = __mobilecontrols.defaultcontrols
+	for name, b in pairs(C) do
+		if b.label then
+			local n = string.len(b.label)
+			local sz = math.floor(math.min(b.w, b.h) * 0.72 / (8 * n))
+			if sz < 2 then sz = 2 end
+			if sz > 4 then sz = 4 end
+			while n * 8 * sz > b.w - 4 and sz > 1 do sz = sz - 1 end
+			expect("label-fits-" .. name, n * 8 * sz <= b.w - 4)
+			expect("label-readable-" .. name, sz >= 2)
+		end
+	end
+end
 
 -- 13. menu taps: a tap selects the row under the finger and confirms it
 --
