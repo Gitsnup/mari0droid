@@ -70,8 +70,28 @@ setmetatable(p, { __index = mario })
 menu_log = {}
 selection = 1
 continueavailable = false
+players = 1
 function menu_keypressed(key)
 	menu_log[#menu_log+1] = key
+	-- Mirror menu.lua's real navigation, so the tap translation is exercised
+	-- against the game's actual clamping instead of a stub that moves selection
+	-- freely. menu_keypressed clamps "up" at 1 when there is no suspend file and
+	-- "down" at 4; a walk that ignores that must fail here.
+	if key == "up" then
+		local floor = continueavailable and 0 or 1
+		if selection > floor then selection = selection - 1 end
+	elseif key == "down" then
+		if selection < 4 then selection = selection + 1 end
+	end
+end
+-- Mirrors menu.lua's menu_load: enter the menu in a known state. It resets
+-- continueavailable from the suspend file, so tests that need it set must do so
+-- AFTER calling this.
+function menu_load()
+	gamestate = "menu"
+	selection = 1
+	players = 1
+	continueavailable = false
 end
 
 -- The real main.lua requires mobilecontrols BEFORE defining love.load, so the
@@ -83,7 +103,22 @@ rawchangescale = function(s, fullscreen)
 end
 changescale = rawchangescale
 
-dofile("mobilecontrols.lua")
+-- Every module load goes through boot_module(). Two ordering rules matter:
+--   1. clear any handler left by a previous boot, or the key exists and the
+--      module's __newindex wrap hook never fires again;
+--   2. load the module FIRST so it installs the metatable, THEN assign the
+--      handler, because the wrap only applies to an assignment made after the
+--      metatable exists.
+local function boot_module()
+	love.mousepressed = nil
+	love.mousereleased = nil
+	dofile("mobilecontrols.lua")
+	love.mousepressed = function(x, y, b, it) mouse_log = (mouse_log or 0) + 1 end
+	love.mousereleased = function(x, y, b, it) mouse_log = (mouse_log or 0) + 1 end
+end
+
+
+boot_module()
 
 local load_ran = false
 function love.load() load_ran = true; defaultconfig() end
@@ -149,16 +184,25 @@ expect("endpressbutton-advances", gamekeys[#gamekeys] == "endgame" and endpressb
 gamestate = "game"
 love.touchpressed(12, 800*0.95, 480*0.10); love.touchreleased(12, 800*0.95, 480*0.10) -- open
 pausemenuselected = 2
-local sc, cx = scale, width*8*scale
-local row1y = (112*scale - 60*scale)
--- synthesized mouse stubs (hook wraps them as they're assigned)
-love.mousepressed = function(x, y, b, it) mouse_log = (mouse_log or 0) + 1 end
-love.mousereleased = function(x, y, b, it) mouse_log = (mouse_log or 0) + 1 end
+-- The panel is centred in the window, so its drawn centre is
+-- (gw - w*16*scale)/2 + (w*8)*scale, which is only w*8*scale when the drawn
+-- width happens to equal the window width. Keep the two axes separate: a single
+-- `local a = x, y` keeps only x and silently reuses it on the y axis.
+local pgw, pgh = love.graphics.getWidth(), love.graphics.getHeight()
+local pspx, pspy = (pgw - width*16*scale)/2, (pgh - 224*scale)/2
+local cx = pspx + (width*8)*scale
+local row1y = pspy + (112*scale) - 60*scale + 6*scale  -- inside row 1's band
 mouse_log = 0
 love.mousepressed(cx, row1y, 1, true)
 expect("pause-row-select", pausemenuselected == 1)
 love.mousepressed(cx, row1y, 1, true)
 expect("pause-row-resume", pausemenuopen ~= true)
+-- a tap outside the box must not select a row that isn't drawn there
+pausemenuopen = true
+pausemenuselected = 3
+love.mousepressed(cx, pspy - 100, 1, true)
+expect("pause-tap-outside-box", pausemenuselected == 3)
+pausemenuopen = nil
 
 -- 8. synthetic mouse: swallowed on controls + left zone, allowed in aim zone
 mouse_log = 0
@@ -183,7 +227,7 @@ love.touchreleased(14, 200, 400)
 expect("editing-stopped", savedata ~= nil and savedata:match("left=0%.25,0%.8333") ~= nil)
 
 -- 10. fresh module boot loads the saved layout
-dofile("mobilecontrols.lua")
+boot_module()
 love.load = nil  -- __newindex only fires for NEW keys: clear first
 love.load = function() end  -- re-triggers the load wrapper
 love.load()
@@ -203,31 +247,91 @@ love.draw()  -- the draw wrapper runs draw_controls internally
 expect("held-cleared-on-state-change", checkkey({"touch", "left"}) == false)
 
 -- 13. menu taps: a tap selects the row under the finger and confirms it
-gamestate = "menu"
+--
+-- Coordinates are derived from the module's OWN band table (S.menu_rows) rather
+-- than hardcoded, so a band that moves in mobilecontrols.lua cannot silently
+-- desync the test. That is exactly how the earlier hardcoded copy went wrong.
+local MR = __mobilecontrols.menu_rows
+expect("menu-rows-exposed", MR ~= nil)
+if not MR then
+	MR = {{123,138},{139,154},{155,170},{171,186},{187,202}}
+end
+-- Screen y of a row's centre: panel vertically centred, rows drawn one
+-- scale-unit low inside their translate.
+local function tap_y(band, gh, sc)
+	return (gh - 224*sc)/2 + ((band[1] + band[2]) / 2) * sc
+end
+
 scale, width = 2, 25
-continueavailable = false
-menu_log = {}
--- row 2 ("level editor") spans gui y 149..175, so 160*scale is inside it
-love.mousepressed(160, 160*scale, 1, true)
-expect("menutap-selects-row", selection == 2)
-expect("menutap-confirms", menu_log[1] == "return" and #menu_log == 1)
+local GW, GH = love.graphics.getWidth(), love.graphics.getHeight()
 
--- a tap in the gap between the title and the rows does nothing
-menu_log = {}
-love.mousepressed(160, 110*scale, 1, true)
-expect("menutap-ignores-gap", #menu_log == 0)
+-- With no suspend file, band 1 ("continue game") is not drawn, so band i maps
+-- to selection i-1. Every real band must hit its own row.
+menu_load()
+for i = 2, #MR do
+	selection = 1
+	menu_log = {}
+	love.mousepressed(160, tap_y(MR[i], GH, scale), 1, true)
+	expect("menutap-band" .. i .. "-selects", selection == i - 1)
+	expect("menutap-band" .. i .. "-confirms", menu_log[#menu_log] == "return")
+end
 
--- with a suspend file present every row shifts down by one
-continueavailable = true
+-- the undrawn band 1 must fall through rather than select something
+menu_load()
 selection = 1
 menu_log = {}
-love.mousepressed(160, 160*scale, 1, true)
-expect("menutap-continue-shift", selection == 1 and menu_log[1] == "return")
+love.mousepressed(160, tap_y(MR[1], GH, scale), 1, true)
+expect("menutap-absent-continue-falls-through", selection == 1 and #menu_log == 0)
+
+-- a tap above the rows does nothing
+menu_log = {}
+love.mousepressed(160, tap_y(MR[1], GH, scale) - 40, 1, true)
+expect("menutap-ignores-gap", #menu_log == 0)
+
+-- with a suspend file, band i maps to selection i-1 (band 1 is selection 0)
+continueavailable = true
+menu_load()
+continueavailable = true
+for i = 1, #MR do
+	selection = 4
+	menu_log = {}
+	love.mousepressed(160, tap_y(MR[i], GH, scale), 1, true)
+	expect("menutap-suspend-band" .. i .. "-selects", selection == i - 1)
+end
+menu_load()
+
+-- letterboxed: same gui band, offset by the window. 720x480 at scale 1 draws a
+-- 400-wide panel starting at x 160.
+scale, width = 1, 25
+love.graphics.getWidth = function() return 720 end
+love.graphics.getHeight = function() return 480 end
+menu_load()
+selection = 1
+menu_log = {}
+love.mousepressed(160 + 200, tap_y(MR[5], 480, 1), 1, true)
+expect("menutap-letterboxed-row", selection == 4 and menu_log[#menu_log] == "return")
+love.graphics.getWidth = function() return 800 end
+love.graphics.getHeight = function() return 480 end
+
+-- high-dpi: the row must be found at its drawn position, not at y/scale. On a
+-- 1080-tall window the old y/scale maths landed roughly 2.7x off.
+love.graphics.getWidth = function() return 2400 end
+love.graphics.getHeight = function() return 1080 end
+scale, width = 1080/224, 25
+menu_load()
+selection = 1
+menu_log = {}
+love.mousepressed(160, tap_y(MR[5], 1080, scale), 1, true)
+expect("menutap-highdpi-row", selection == 4 and menu_log[#menu_log] == "return")
+love.graphics.getWidth = function() return 800 end
+love.graphics.getHeight = function() return 480 end
+scale, width = 2, 25
+menu_load()
 
 -- a desktop mouse click must not be translated into key presses
 love.system.getOS = function() return "Linux" end
 playertype, mario = playertype, mario
-dofile("mobilecontrols.lua")
+boot_module()
 love.load = nil
 love.load = function() end
 love.load()
@@ -237,51 +341,57 @@ menu_log = {}
 love.mousepressed(160, 160*scale, 1, false)
 expect("menutap-desktop-passthrough", #menu_log == 0)
 love.system.getOS = function() return "Android" end
-dofile("mobilecontrols.lua")
+boot_module()
 love.load = nil
 love.load = function() end
 love.load()
 gamestate = "game"
 
---- 12b. mobile scale: fits BOTH the height and the width of the screen
+--- 12b. mobile scale: driven by the screen height alone
+---
+--- The level scrolls, so the playfield's full width never has to fit on screen
+--- and there is no width cap. scale is h/224, deliberately NOT floored, so the
+--- playfield fills the height exactly instead of leaving dead space.
 --- (harness boots as Android, so the module is already in mobile mode)
 scale = 2; uispace = 100; gamewidth, gameheight = 800, 448
 love.graphics.getWidth = function() return 2400 end
 love.graphics.getHeight = function() return 1080 end
 changescale(2)
--- 2400x1080 would let 4x fill the height, but 4*400 = 1600 <= 2400 so width
--- also allows it; the full 224-unit playfield has to fit vertically.
-expect("mobile-scale-fits-height", scale*224 <= 1080 and (scale+1)*224 > 1080)
-expect("mobile-scale-fits-width", scale*16*25 <= 2400)
+expect("mobile-scale-fills-height", math.abs(scale*224 - 1080) < 0.001)
+expect("mobile-scale-is-fractional", scale > 4)
 expect("mobile-uispace", uispace == math.floor(width*16*scale/4))
 
--- A 16:9 phone: the height allows more scale than the width does. This is the
--- case that used to overshoot and push the view off the bottom of the screen.
+-- His phone, the case in the screenshot. Pre-fix this floored to 4 and drew an
+-- 896px playfield in a 1080px window: 17% of the screen left empty.
+love.graphics.getWidth = function() return 2340 end
+love.graphics.getHeight = function() return 1080 end
+changescale(2)
+expect("mobile-phone-fills-height", math.abs(scale*224 - 1080) < 0.001)
+expect("mobile-phone-not-floored", scale > 4)
+
+-- Portrait phone: still purely height-driven.
 love.graphics.getWidth = function() return 720 end
 love.graphics.getHeight = function() return 1280 end
 changescale(2)
-expect("mobile-phone-fits-width", scale*16*25 <= 720)
-expect("mobile-phone-fits-height", scale*224 <= 1280)
-expect("mobile-phone-picks-width-limit", scale == 1)
+expect("mobile-portrait-fills-height", math.abs(scale*224 - 1280) < 0.001)
 
--- Narrow portrait: width is the binding constraint.
-love.graphics.getWidth = function() return 1000 end
-love.graphics.getHeight = function() return 1600 end
-changescale(2)
-expect("mobile-scale-narrow-caps", scale == math.floor(1000/(16*25)))
-
--- Landscape tablet: height is the binding constraint.
+-- Landscape tablet.
 love.graphics.getWidth = function() return 1600 end
 love.graphics.getHeight = function() return 900 end
 changescale(2)
-expect("mobile-tablet-fits-height", scale == math.floor(900/224))
-expect("mobile-tablet-fits-width", scale*16*25 <= 1600)
+expect("mobile-tablet-fills-height", math.abs(scale*224 - 900) < 0.001)
+
+-- A tiny screen must never yield a sub-1 scale.
+love.graphics.getWidth = function() return 320 end
+love.graphics.getHeight = function() return 200 end
+changescale(2)
+expect("mobile-tiny-screen-floor", scale == 1)
 
 love.graphics.getWidth = function() return 800 end
 love.graphics.getHeight = function() return 480 end
 -- desktop: fresh boot with a desktop OS; changescale passes through untouched
 love.system.getOS = function() return "Linux" end
-dofile("mobilecontrols.lua")
+boot_module()
 love.load = function() end
 love.load()
 love.graphics.getWidth = function() return 800 end

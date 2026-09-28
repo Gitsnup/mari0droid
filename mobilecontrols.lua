@@ -13,17 +13,21 @@ _G.__mobilecontrols = S
 local mobile = {
 	opacity = 0.48,
 	controls = {
+		-- Labels must be characters the game's own font atlas can draw.
+		-- fontglyphs (main.lua) only carries digits, UPPERCASE letters and
+		-- .:/,'C-_>* !{}? -- so no lowercase and no "+". Anything outside that
+		-- set renders as a blank circle.
 		left    = {x=.10, y=.82, w=68, h=68, label="<"},
 		right   = {x=.22, y=.82, w=68, h=68, label=">"},
-		down    = {x=.16, y=.70, w=56, h=56, label="v"},
+		down    = {x=.16, y=.70, w=56, h=56, label="_"},
 		up      = {x=.16, y=.56, w=48, h=48, label="^"},
 		jump    = {x=.78, y=.78, w=76, h=76, label="A"},
 		run     = {x=.90, y=.68, w=64, h=64, label="B"},
 		portal1 = {x=.78, y=.58, w=58, h=58, label="O"},
 		portal2 = {x=.90, y=.54, w=58, h=58, label="O"},
 		reload  = {x=.08, y=.62, w=52, h=52, label="R"},
-		use     = {x=.28, y=.67, w=52, h=52, label="E"},
-		pause   = {x=.95, y=.10, w=46, h=46, label="||"},
+		use     = {x=.28, y=.67, w=52, h=52, label="USE"},
+		pause   = {x=.95, y=.10, w=46, h=46, label="+"},
 	}
 }
 S.controls = mobile.controls
@@ -225,15 +229,27 @@ function mobile_touchreleased(id, x, y)
 	return t ~= nil
 end
 
--- Rows drawn by the main menu, in gui-relative units, as (top, bottom).
--- Derived from the menu.lua drawing code: the title block occupies y 24..97 and
--- the four rows run from y 133 down to y 206.
+-- Rows drawn by the main menu, as (top, bottom) in un-scaled gui units.
+-- Taken straight from menu.lua's properprint calls: 122, 138, 154, 170, 186,
+-- each glyph 8 units tall, each row 16 units apart. "continue game" only
+-- exists when a suspend file is present.
+--
+-- Those calls sit inside a `love.graphics.translate(tx, ty)` with ty = scale
+-- (the outline pass, which the final "i == 9" iteration sets to 0, +scale), so
+-- every row is drawn one scale-unit lower than its literal coordinate. The
+-- bands below are shifted by that one unit; without it a tap one pixel off the
+-- row's top edge falls through and the menu ignores it.
 local menu_rows = {
-	{133, 159}, -- play / continue
-	{149, 175}, -- level editor
-	{165, 191}, -- mappacks
-	{181, 206}, -- options
+	{123, 138}, -- continue game
+	{139, 154}, -- player game
+	{155, 170}, -- level editor
+	{171, 186}, -- select mappack
+	{187, 202}, -- options
 }
+-- Exposed so the harness can derive tap coordinates from the same table the hit
+-- test uses. A test that hardcodes its own copy silently drifts out of sync the
+-- moment a band moves, which is exactly what happened here.
+S.menu_rows = menu_rows
 
 -- The menu, options and mappack screens are keyboard-driven: every action lives
 -- in menu_keypressed, and nothing ever calls guielement:click for them
@@ -242,6 +258,26 @@ local menu_rows = {
 --
 -- Rather than reimplement navigation, move `selection` to the tapped row and
 -- then send "return", so there stays exactly one copy of the menu logic.
+--
+-- The coordinates: the menu draws its rows at (starty + row*16) * scale, and
+-- horizontal positions between -(64*scale) and 92*scale. But `scale` is capped
+-- so a logical width fits the screen, and `uispace` -- which is what the menu's
+-- shifts and the window centring are built from -- is derived from the FULL
+-- logical width. `x / scale` is therefore wrong: on a 1080p phone it lands at
+-- 2.77x the intended row. The row's real screen x is its offset from the centre
+-- of the logical width, scaled up.
+local function tapspace()
+	local sc = scale
+	if shaders and shaders.scale then sc = shaders.scale end
+	if not sc or sc <= 0 then return nil end
+	local gw, gh = love.graphics.getWidth(), love.graphics.getHeight()
+	local logw = width * 16
+	if not logw or logw <= 0 then logw = gw / sc end
+	local offx = (gw - logw * sc) / 2
+	local offy = (gh - 224 * sc) / 2
+	return sc, offx, offy, logw
+end
+
 local function menutap(x, y)
 	if not S.ismobile then return false end
 	if gamestate ~= "menu" and gamestate ~= "options" and gamestate ~= "mappackmenu" then
@@ -249,21 +285,44 @@ local function menutap(x, y)
 	end
 	if not menu_keypressed then return false end
 
-	local sc = scale
-	if shaders and shaders.scale then sc = shaders.scale end
-	if not sc or sc <= 0 then return false end
+	local sc, offx, offy, logw = tapspace()
+	if not sc then return false end
 
-	local gui_y = y / sc
+	local gui_y = (y - offy) / sc
 
 	if gamestate == "menu" then
-		-- The first row is only "continue" when a suspend file exists;
-		-- otherwise selection 1 is "play" and the rows shift up by one.
-		local first = continueavailable and 0 or 1
+		-- Tapping a row is not enough on its own: selection 1 is "player game"
+		-- unless a suspend exists, and "continue game" is row 0. Translate the
+		-- tap into arrow presses instead, so the option list stays the single
+		-- source of truth for what each row does.
+		--
+		-- The band list and the selection list must line up index for index.
+		-- Without a suspend file the menu draws four rows, so the first band in
+		-- menu_rows is not present on screen and its selection slot is skipped.
+		local rows = {}
+		if continueavailable then
+			rows = {0, 1, 2, 3, 4}
+		else
+			-- No "continue game": the first band is not drawn on screen, so it
+			-- holds a placeholder that the hit test treats as "nothing here".
+			rows = {false, 1, 2, 3, 4}
+		end
+
 		for i, row in ipairs(menu_rows) do
-			local sel = first + i - 1
-			if sel > 4 then break end
-			if gui_y >= row[1] and gui_y < row[2] then
-				selection = sel
+			if gui_y >= row[1] and gui_y < row[2] and rows[i] then
+				local want = rows[i]
+				-- Walk selection to the tapped row using the game's own handler,
+				-- and stop as soon as a press stops changing it. menu_keypressed
+				-- clamps "up" at 1 unless a suspend file exists, so the walk can
+				-- legitimately stall short of `want`; pressing on would just
+				-- spin and then confirm the wrong row.
+				local guard = 0
+				while selection ~= want and guard < 10 do
+					local before = selection
+					guard = guard + 1
+					menu_keypressed(selection > want and "up" or "down")
+					if selection == before then break end
+				end
 				menu_keypressed("return")
 				return true
 			end
@@ -271,8 +330,8 @@ local function menutap(x, y)
 		return false
 	end
 
-	-- Options and mappackmenu are custom screens with their own cursor, but
-	-- both confirm whatever the cursor is on when they see "return".
+	-- Options and mappackmenu own their own cursors; both confirm whatever the
+	-- cursor is on when they see "return".
 	menu_keypressed("return")
 	return true
 end
@@ -289,31 +348,37 @@ end
 
 -- Taps on the (keyboard-only) pause menu: select rows, confirm with a second
 -- tap, adjust volume. Translated into the game's own key handling.
+--
+-- Coordinates come straight from game.lua's draw: the box spans
+-- width*8*scale +/- 50*scale horizontally and (112-75)*scale..(112+75)*scale
+-- vertically, rows sit at (112-60)*scale + (i-1)*25*scale with a second line
+-- 10 units below for the wrapped "quit to menu"/"quit to desktop" labels, and
+-- the yes/no prompt is at (112-24)..(112+24) with "yes" left of the centre.
 local function pausetap(x, y)
-	local sc = scale
-	if shaders and shaders.scale then sc = shaders.scale end
-	if not width or not sc then return end
-	local cx = width*8*sc
+	local sc, offx, offy = tapspace()
+	if not sc or not width then return end
+
+	local cx = offx + (width * 8) * sc
+	local boxx = cx - 50*sc
+	local boxy = offy + 37*sc
 
 	if menuprompt or desktopprompt or suspendprompt then
-		if y >= 100*sc and y <= 132*sc then
-			local left = x < cx
-			local sel = left and 1 or 2
+		if y >= offy + 88*sc and y <= offy + 136*sc and x >= boxx and x <= boxx + 200*sc then
+			local sel = x < cx and 1 or 2
 			if pausemenuselected2 == sel then
 				game_keypressed("return")
 			else
 				pausemenuselected2 = sel
-				game_keypressed(left and "left" or "right")
+				game_keypressed(sel == 1 and "left" or "right")
 			end
 		end
 		return
 	end
 
-	local boxx, boxy, boxw, boxh = cx-50*sc, 37*sc, 100*sc, 150*sc
-	if x < boxx or x > boxx+boxw or y < boxy or y > boxy+boxh then return end
+	if x < boxx or x > boxx + 100*sc or y < boxy or y > boxy + 150*sc then return end
 	for i = 1, #pausemenuoptions do
-		local ry = 112*sc - 60*sc + (i-1)*25*sc
-		if y >= ry-8*sc and y <= ry+20*sc then
+		local ry = offy + (112*sc) - 60*sc + (i-1)*25*sc
+		if y >= ry - 8*sc and y <= ry + 24*sc then
 			if pausemenuselected == i then
 				if pausemenuoptions[i] == "volume" then
 					game_keypressed(x >= cx and "right" or "left")
@@ -326,6 +391,19 @@ local function pausetap(x, y)
 			return
 		end
 	end
+end
+
+-- Button labels are drawn with the game's own 8x8 glyph atlas rather than
+-- love's default font, which is a 12px outline face that reads badly at button
+-- size. Centres the text, and steps the size down for anything longer than a
+-- single glyph.
+local function drawlabel(label, x, y, w, h)
+	if not label or label == "" then return end
+	local n = string.len(label)
+	local size = 2
+	if n > 1 then size = 1 end
+	local tw = n * 8 * size
+	love.graphics.printf(label, x + (w - tw) / 2, y + h / 2 - 4 * size, tw, "left")
 end
 
 local function draw_controls()
@@ -345,7 +423,7 @@ local function draw_controls()
 		love.graphics.circle("fill", x+w/2, y+h/2, math.min(w, h)/2)
 		love.graphics.setColor(1, 1, 1, 0.85)
 		love.graphics.circle("line", x+w/2, y+h/2, math.min(w, h)/2)
-		love.graphics.printf(b.label, x, y+h*0.28, w, "center")
+		drawlabel(b.label, x, y, w, h)
 	end
 	if editing then
 		love.graphics.setColor(1, 1, 1, 1)
@@ -387,29 +465,24 @@ local function postwrap()
 	applytouchbindings()
 end
 
--- Android ignores love.window.setMode's 800x448, so the game would render
--- at the raw device resolution with scale still at its desktop value. Adapt
--- the scale so the 224-unit playfield fills the screen's height (capped so
--- ultra-wide screens don't stretch the level), and keep GUI metrics in sync.
 -- Android ignores love.window.setMode's desktop size, so the game would render
 -- at the raw device resolution with `scale` left at its desktop value. Pick a
 -- scale from the real screen instead.
 --
--- Two constraints, and BOTH have to hold or the view runs off the screen:
---   * 224 is the visible playfield height (14 blocks of 16), so the screen
---     height limits scale to h/224.
---   * 25 blocks (27 in two-player) have to fit across the width, so the width
---     limits scale to w/400.
--- The previous version only capped for a 26-block width, which still overshot
--- on a 16:9 phone and pushed the level off the bottom of the screen. Round down
--- and floor at 1 so the whole view is always inside the window.
-local function mobilescale(w, h)
-	local sw = width or 25
-	if players and players > 1 then sw = 27 end
-	local bywidth = w / (16 * sw)
-	local byheight = h / 224
-	local s = math.min(bywidth, byheight)
-	return math.max(1, math.floor(s))
+-- Only ONE constraint matters: 224 is the visible playfield height (14 blocks
+-- of 16), so the screen height fixes the scale at h/224. The level scrolls
+-- horizontally, so its full width never has to fit on screen at once, and a
+-- width cap only ever shrinks the view and letterboxes the sides.
+--
+-- The scale is deliberately NOT floored. Flooring h/224 wastes the remainder as
+-- dead space: on a 1080p phone the fit is 4.82, so flooring to 4 drew the
+-- playfield 896px tall in a 1080px window and left 17% of the screen empty
+-- above and below. Rounding down is only needed by callers that require whole
+-- pixels, so it stays available via mobilescale(true, w, h).
+local function mobilescale(integer, w, h)
+	local s = h / 224
+	if integer then s = math.floor(s) end
+	return math.max(1, s)
 end
 
 local function wrapchangescale()
@@ -420,7 +493,7 @@ local function wrapchangescale()
 		if S.ismobile and love.graphics then
 			local w, h = love.graphics.getWidth(), love.graphics.getHeight()
 			if w > 0 and h > 0 then
-				local newscale = mobilescale(w, h)
+				local newscale = mobilescale(false, w, h)
 				if newscale ~= scale or fullscreen ~= fullscreenmode then
 					fullscreenmode = fullscreen
 					oldchangescale(newscale, fullscreen, ...)
