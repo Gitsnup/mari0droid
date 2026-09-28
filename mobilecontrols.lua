@@ -225,6 +225,58 @@ function mobile_touchreleased(id, x, y)
 	return t ~= nil
 end
 
+-- Rows drawn by the main menu, in gui-relative units, as (top, bottom).
+-- Derived from the menu.lua drawing code: the title block occupies y 24..97 and
+-- the four rows run from y 133 down to y 206.
+local menu_rows = {
+	{133, 159}, -- play / continue
+	{149, 175}, -- level editor
+	{165, 191}, -- mappacks
+	{181, 206}, -- options
+}
+
+-- The menu, options and mappack screens are keyboard-driven: every action lives
+-- in menu_keypressed, and nothing ever calls guielement:click for them
+-- (menu_mousepressed is an empty stub). So a tap has to be translated into the
+-- key presses the game already handles.
+--
+-- Rather than reimplement navigation, move `selection` to the tapped row and
+-- then send "return", so there stays exactly one copy of the menu logic.
+local function menutap(x, y)
+	if not S.ismobile then return false end
+	if gamestate ~= "menu" and gamestate ~= "options" and gamestate ~= "mappackmenu" then
+		return false
+	end
+	if not menu_keypressed then return false end
+
+	local sc = scale
+	if shaders and shaders.scale then sc = shaders.scale end
+	if not sc or sc <= 0 then return false end
+
+	local gui_y = y / sc
+
+	if gamestate == "menu" then
+		-- The first row is only "continue" when a suspend file exists;
+		-- otherwise selection 1 is "play" and the rows shift up by one.
+		local first = continueavailable and 0 or 1
+		for i, row in ipairs(menu_rows) do
+			local sel = first + i - 1
+			if sel > 4 then break end
+			if gui_y >= row[1] and gui_y < row[2] then
+				selection = sel
+				menu_keypressed("return")
+				return true
+			end
+		end
+		return false
+	end
+
+	-- Options and mappackmenu are custom screens with their own cursor, but
+	-- both confirm whatever the cursor is on when they see "return".
+	menu_keypressed("return")
+	return true
+end
+
 -- True when a synthesized mouse event (Android reports the first touch as a
 -- mouse) must be ignored so touching a button doesn't fire portals or click
 -- hidden GUI. Taps in the aim area are allowed through: that's how you shoot.
@@ -339,6 +391,27 @@ end
 -- at the raw device resolution with scale still at its desktop value. Adapt
 -- the scale so the 224-unit playfield fills the screen's height (capped so
 -- ultra-wide screens don't stretch the level), and keep GUI metrics in sync.
+-- Android ignores love.window.setMode's desktop size, so the game would render
+-- at the raw device resolution with `scale` left at its desktop value. Pick a
+-- scale from the real screen instead.
+--
+-- Two constraints, and BOTH have to hold or the view runs off the screen:
+--   * 224 is the visible playfield height (14 blocks of 16), so the screen
+--     height limits scale to h/224.
+--   * 25 blocks (27 in two-player) have to fit across the width, so the width
+--     limits scale to w/400.
+-- The previous version only capped for a 26-block width, which still overshot
+-- on a 16:9 phone and pushed the level off the bottom of the screen. Round down
+-- and floor at 1 so the whole view is always inside the window.
+local function mobilescale(w, h)
+	local sw = width or 25
+	if players and players > 1 then sw = 27 end
+	local bywidth = w / (16 * sw)
+	local byheight = h / 224
+	local s = math.min(bywidth, byheight)
+	return math.max(1, math.floor(s))
+end
+
 local function wrapchangescale()
 	if S.cswrapped then return end
 	local oldchangescale = changescale
@@ -347,10 +420,7 @@ local function wrapchangescale()
 		if S.ismobile and love.graphics then
 			local w, h = love.graphics.getWidth(), love.graphics.getHeight()
 			if w > 0 and h > 0 then
-				local newscale = math.max(1, math.floor(h / 224 + 0.5))
-				if w / (16 * newscale) < 26 then
-					newscale = math.max(1, math.floor(w / (16 * 26) + 0.5))
-				end
+				local newscale = mobilescale(w, h)
 				if newscale ~= scale or fullscreen ~= fullscreenmode then
 					fullscreenmode = fullscreen
 					oldchangescale(newscale, fullscreen, ...)
@@ -422,6 +492,9 @@ local function install()
 				local old = v
 				v = function(x, y, button, istouch, ...)
 					if istouch and S.ismobile then
+						-- Menus are outside the game loop, so they get their own
+						-- tap translation rather than the pause-menu handler.
+						if menutap(x, y) then return end
 						if pausemenuopen or menuprompt or desktopprompt or suspendprompt then
 							pausetap(x, y)
 							return
