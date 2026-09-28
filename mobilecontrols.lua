@@ -21,22 +21,29 @@ local mobile = {
 		-- a shared centre, so each direction sits where a thumb expects it.
 		-- The old layout put up/down on a vertical line beside the horizontals,
 		-- which read as four unrelated buttons.
+		-- Sizes are at a 480px-tall reference and scale with screen HEIGHT (see
+		-- size_for), so they stay a consistent physical size on every device.
+		--
 		-- Labels must map to a cell in font.png (main.lua's fontglyphs). That set
 		-- is digits + LOWERCASE a-z + .:/,'C-_>* !{}? -- there are no uppercase
 		-- letters and no "<" or "^", and a character outside the set draws
 		-- nothing at all. The atlas has a right triangle (">") and a down
 		-- triangle ("{"), but no up or left arrow, so those two say "up"/"lt".
-		up      = {x=.155, y=.659, w=64, h=64, label="up"},
-		down    = {x=.155, y=.811, w=64, h=64, label="{"},
-		left    = {x=.102, y=.735, w=64, h=64, label="lt"},
-		right   = {x=.208, y=.735, w=64, h=64, label=">"},
-		jump    = {x=.78, y=.78, w=76, h=76, label="a"},
-		run     = {x=.90, y=.68, w=64, h=64, label="b"},
-		portal1 = {x=.78, y=.58, w=58, h=58, label="1"},
-		portal2 = {x=.90, y=.54, w=58, h=58, label="2"},
-		reload  = {x=.060, y=.600, w=52, h=52, label="r"},
-		use     = {x=.265, y=.735, w=52, h=52, label="use"},
-		pause   = {x=.95, y=.10, w=46, h=46, label="p"},
+		--
+		-- The d-pad is a cross: up above down on a shared x, left and right
+		-- flanking them on a shared y, all centred on one point. Arms are spaced
+		-- well clear of the button size so the four never overlap.
+		up      = {x=.155, y=.660, w=49, h=49, label="up"},
+		left    = {x=.103, y=.735, w=49, h=49, label="lt"},
+		right   = {x=.207, y=.735, w=49, h=49, label=">"},
+		down    = {x=.155, y=.810, w=49, h=49, label="{"},
+		jump    = {x=.78, y=.78, w=57, h=57, label="a"},
+		run     = {x=.90, y=.68, w=49, h=49, label="b"},
+		portal1 = {x=.78, y=.58, w=44, h=44, label="1"},
+		portal2 = {x=.90, y=.54, w=44, h=44, label="2"},
+		reload  = {x=.060, y=.600, w=40, h=40, label="r"},
+		use     = {x=.272, y=.735, w=40, h=40, label="use"},
+		pause   = {x=.95, y=.10, w=36, h=36, label="p"},
 	}
 }
 S.controls = mobile.controls
@@ -66,9 +73,22 @@ local function clamp(v, a, b) return math.max(a, math.min(b, v)) end
 local function ismobileos()
 	return love.system ~= nil and (love.system.getOS() == "Android" or love.system.getOS() == "iOS")
 end
+-- Button size in screen pixels.
+--
+-- The w/h in the layout are sizes at a 224-unit-tall reference, where the
+-- playfield is 224 tall and the window height is what the game scales to. Scaling
+-- width and height by separate factors (w/800, h/480 as this used to do) made
+-- every button an ellipse that grew without bound on a big screen: on a
+-- 2340x1080 phone a "64px" button drew 187x144, and the d-pad arms overlapped.
+--
+-- Derive one square size from the screen HEIGHT instead. Height is the axis the
+-- game itself scales by, and it keeps the buttons a consistent fraction of the
+-- screen on every device.
+local REFHEIGHT = 480
 local function size_for(b)
-	local w, h = love.graphics.getWidth(), love.graphics.getHeight()
-	return b.w * (w / 800), b.h * (h / 480)
+	local h = love.graphics.getHeight()
+	local s = b.w * (h / REFHEIGHT)
+	return s, s
 end
 local function rect(name)
 	local b = S.controls[name]

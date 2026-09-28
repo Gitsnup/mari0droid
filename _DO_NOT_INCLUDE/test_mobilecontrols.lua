@@ -363,15 +363,55 @@ end
 -- size is unclamped, which is unreadable on a phone.
 do
 	local C = __mobilecontrols.defaultcontrols
+	-- Test at a REAL device height, with the size the button will actually be
+	-- drawn at. Asserting at the harness's 480px window would demand legibility
+	-- at a resolution no phone has, and would flag a button that is fine on device.
+	local RH = 1080
+	local ref = 480
 	for name, b in pairs(C) do
 		if b.label then
 			local n = string.len(b.label)
-			local sz = math.floor(math.min(b.w, b.h) * 0.72 / (8 * n))
+			local px = b.w * (RH / ref)          -- drawn size on a 1080-tall screen
+			local sz = math.floor(px * 0.72 / (8 * n))
 			if sz < 2 then sz = 2 end
 			if sz > 4 then sz = 4 end
-			while n * 8 * sz > b.w - 4 and sz > 1 do sz = sz - 1 end
-			expect("label-fits-" .. name, n * 8 * sz <= b.w - 4)
+			while n * 8 * sz > px - 4 and sz > 1 do sz = sz - 1 end
+			expect("label-fits-" .. name, n * 8 * sz <= px - 4)
 			expect("label-readable-" .. name, sz >= 2)
+		end
+	end
+end
+
+-- 12e. no two controls may overlap at a real device resolution. The buttons
+-- scale with screen height while their positions are fractions, so a layout that
+-- is fine at 480px can collapse into a blob on a phone. This is exactly how the
+-- d-pad shipped overlapping: it was only ever checked at the harness size.
+do
+	local C = __mobilecontrols.defaultcontrols
+	local W_, H_ = 2340, 1080
+	local ref = 480
+	-- The controls are drawn as CIRCLES, so test circle separation. Comparing
+	-- bounding boxes flags diagonal neighbours as colliding when the discs are
+	-- comfortably apart.
+	local discs = {}
+	local names = {}
+	for name, b in pairs(C) do
+		local rad = b.w * (H_ / ref) / 2
+		discs[name] = {b.x * W_, b.y * H_, rad}
+		names[#names+1] = name
+	end
+	table.sort(names)
+	for i = 1, #names do
+		for j = i+1, #names do
+			local A, B = discs[names[i]], discs[names[j]]
+			local dx, dy = A[1] - B[1], A[2] - B[2]
+			local d = math.sqrt(dx*dx + dy*dy)
+			local gap = d - (A[3] + B[3])
+			-- Assert a USABLE gap, not just non-intersection. The shipped d-pad
+			-- cleared by 4.7px, which is geometrically "not overlapping" and
+			-- visually one blob. 15px is the floor at which two discs read as
+			-- separate at a glance.
+			expect("gap-" .. names[i] .. "-" .. names[j], gap >= 15)
 		end
 	end
 end
